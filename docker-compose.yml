@@ -1,0 +1,11 @@
+services:
+  lexicon-raptor:
+    build: .
+    container_name: lexicon-raptor
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    volumes:
+      # Show file (human-readable JSON) lives on the host so it can be
+      # edited, backed up, and copied between machines.
+      - ./data:/app/data

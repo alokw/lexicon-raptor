@@ -1,0 +1,9 @@
+node_modules
+web/node_modules
+web/dist
+data
+pixera_api_ref
+tools
+.git
+.gitignore
+*.md

@@ -1,0 +1,20 @@
+{
+  "name": "lexicon-raptor",
+  "version": "0.1.0",
+  "description": "Cue-list control dashboard for primary/backup Pixera media servers",
+  "type": "module",
+  "main": "server/index.js",
+  "scripts": {
+    "start": "node server/index.js",
+    "dev": "node server/index.js",
+    "dev:web": "npm --prefix web run dev",
+    "build:web": "npm --prefix web run build",
+    "mock": "node tools/mock-pixera.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  }
+}
