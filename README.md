@@ -79,6 +79,22 @@ Human-readable, pretty-printed JSON — edit it in any text editor, keep it in v
 | **Import** | Pulls every cue from every timeline on the connected server; cues already in the cuelist are greyed out. |
 | **Debug** | Live log of every command sent/received per server, with tabs and pause. |
 
+### Debug / API exploration endpoints
+
+Two extra endpoints help inspect the Pixera API from a browser or curl (their traffic also appears in the Debug panel):
+
+```bash
+# Timeline info (defaults to the selected timeline; handle resolved for you)
+http://localhost:8000/api/debug/timeline-info
+http://localhost:8000/api/debug/timeline-info?timeline=Main%20Show
+
+# Arbitrary Pixera.* call on the preferred (or named) server
+curl -X POST localhost:8000/api/debug/rpc -H 'Content-Type: application/json' \
+  -d '{"method":"Pixera.Utility.getApiRevision"}'          # add "server":"backup" to target one
+```
+
+Useful for capturing real reply samples before building features on undocumented calls.
+
 ## Configuration
 
 | Env var | Default | Purpose |
@@ -90,7 +106,7 @@ Human-readable, pretty-printed JSON — edit it in any text editor, keep it in v
 
 - **Name-based firing** was chosen deliberately: it survives project reloads and works identically across primary/backup. Handles are only used transiently (import enumeration, selected-timeline lookup) and never persisted.
 - The server modules are independent (`connection` → framing/reconnect, `manager` → orchestration, `show-store` → persistence) so new features (per-cue colors, hotkeys, multi-page cuelists, Pixera monitoring subscriptions) slot in without rework.
-- Elapsed time comes from `getCurrentHMSFOfTimeline`; the countdown shown is Pixera's *next-cue countdown*. True "remaining in timeline" needs the timeline duration, which rev 481 doesn't expose directly — candidates: parse `getTimelineInfosAsJsonString`.
+- Elapsed time comes from `getCurrentHMSFOfTimeline`; the countdown shown is Pixera's *next-cue countdown*. True "remaining in timeline" is **not possible** on API rev 481 — verified on real hardware that no call (including `getTimelineInfosAsJsonString`) exposes a timeline duration.
 - Multiple browsers/tablets can be open at once; state stays in sync via WebSocket.
 
 ## Testing without hardware

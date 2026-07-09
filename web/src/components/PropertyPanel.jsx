@@ -2,12 +2,19 @@ import React, { useEffect, useState } from 'react';
 import { useStore } from '../lib/store.jsx';
 import { api } from '../lib/api.js';
 
-const EMPTY_FORM = { label: '', cueName: '', timelineName: '', fadeMs: '', notes: '' };
+const EMPTY_FORM = { label: '', cueName: '', timelineName: '', fadeMs: '', notes: '', color: '' };
 
 function CueForm({ initial, disabled, submitLabel, onSubmit, onDelete }) {
   const { state } = useStore();
   const [form, setForm] = useState(initial || EMPTY_FORM);
-  useEffect(() => setForm(initial || EMPTY_FORM), [initial]);
+  // Reset only when the *values* change (parent re-renders every playback
+  // tick with a fresh `initial` object; comparing by reference would wipe
+  // in-progress edits while a timeline is playing).
+  const initialJson = JSON.stringify(initial ?? null);
+  useEffect(() => {
+    setForm(initial || EMPTY_FORM);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialJson]);
 
   const set = (key) => (e) => setForm({ ...form, [key]: e.target.value });
 
@@ -49,6 +56,31 @@ function CueForm({ initial, disabled, submitLabel, onSubmit, onDelete }) {
         <span>Notes</span>
         <textarea rows="2" value={form.notes} onChange={set('notes')} disabled={disabled} />
       </label>
+      <div className="field">
+        <span>Color</span>
+        <div className="color-field">
+          <input
+            type="color"
+            value={form.color || '#4c8dff'}
+            onChange={set('color')}
+            disabled={disabled}
+            title="Cue color (shown darkened on the tile)"
+          />
+          {form.color ? (
+            !disabled && (
+              <button
+                type="button"
+                className="btn btn-sm"
+                onClick={() => setForm({ ...form, color: '' })}
+              >
+                Clear
+              </button>
+            )
+          ) : (
+            <small>no color</small>
+          )}
+        </div>
+      </div>
       {!disabled && (
         <div className="form-actions">
           <button type="submit" className="btn btn-primary">
@@ -136,6 +168,7 @@ export default function PropertyPanel({ onOpenImport }) {
                 timelineName: selectedCue.timelineName,
                 fadeMs: selectedCue.fadeMs ?? '',
                 notes: selectedCue.notes,
+                color: selectedCue.color ?? '',
               }}
               disabled={!isEdit}
               submitLabel="Save"

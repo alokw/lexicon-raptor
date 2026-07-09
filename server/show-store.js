@@ -42,12 +42,19 @@ export function sanitizeCueInput(input = {}) {
     if (!Number.isFinite(n) || n < 0) throw new Error('fadeMs must be a non-negative number');
     fadeMs = Math.round(n);
   }
+  // Optional display color (#rrggbb). Lenient: anything else becomes null.
+  let color = null;
+  if (typeof input.color === 'string') {
+    const m = input.color.trim().match(/^#?([0-9a-fA-F]{6})$/);
+    if (m) color = `#${m[1].toLowerCase()}`;
+  }
   return {
     label: str(input.label),
     cueName: str(input.cueName),
     timelineName: str(input.timelineName),
     fadeMs,
     notes: str(input.notes),
+    color,
   };
 }
 

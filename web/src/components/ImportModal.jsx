@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { useStore } from '../lib/store.jsx';
 import { api } from '../lib/api.js';
+import { cueColorStyles } from '../lib/color.js';
 
 // Cues are identified by timeline + cue name (that's also how they're fired).
 const keyOf = (timelineName, cueName) => `${timelineName}||${cueName}`;
@@ -99,6 +100,8 @@ export default function ImportModal({ onClose }) {
             timelineName: tl.timelineName,
             fadeMs: '',
             notes: cue.note || '',
+            // Only keep real colors (cueColorStyles filters Pixera's #000000 default)
+            color: cueColorStyles(cue.color) ? cue.color : '',
           });
           added++;
         }
@@ -187,6 +190,12 @@ export default function ImportModal({ onClose }) {
                           checked={exists || checked.has(key)}
                           onChange={() => toggle(key)}
                         />
+                        {cueColorStyles(cue.color) && (
+                          <span
+                            className="color-swatch"
+                            style={{ background: cueColorStyles(cue.color).accent }}
+                          />
+                        )}
                         <span className="import-cue-name">
                           {unnamed ? '(unnamed)' : cue.name}
                         </span>

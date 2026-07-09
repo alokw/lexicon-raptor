@@ -18,10 +18,10 @@ const timelines = [
     transportMode: 3,
     timeFrames: 0,
     cues: [
-      { handle: 5001, name: 'Opening Look', number: 1, note: 'House to half', operation: 1 },
-      { handle: 5002, name: 'Walk-in Loop', number: 2, note: '', operation: 2 },
-      { handle: 5003, name: 'Keynote Title', number: 3, note: 'Wait for MC', operation: 4 },
-      { handle: 5004, name: 'Blackout', number: 99, note: 'EOS', operation: 3 },
+      { handle: 5001, name: 'Opening Look', number: 1, note: 'House to half', operation: 1, color: '#276235' },
+      { handle: 5002, name: 'Walk-in Loop', number: 2, note: '', operation: 2, color: '#FFFF00' },
+      { handle: 5003, name: 'Keynote Title', number: 3, note: 'Wait for MC', operation: 4, color: '#384C70' },
+      { handle: 5004, name: 'Blackout', number: 99, note: 'EOS', operation: 3, color: '#8D1D2C' },
     ],
   },
   {
@@ -76,7 +76,7 @@ const handlers = {
     const opName = { 1: 'Play', 2: 'Pause', 3: 'Stop', 4: 'Jump' };
     return JSON.stringify(
       tl.cues.map((c, i) => ({
-        color: '#000000',
+        color: c.color || '#000000',
         countdown: `00:00:${String(i * 5).padStart(2, '0')}:00`,
         formattedNumber: String(c.number),
         handle: c.handle,
@@ -102,11 +102,39 @@ const handlers = {
     timelines.flatMap((t) => t.cues).find((c) => c.handle === handle)?.note ?? '',
   'Pixera.Timelines.Cue.getOperation': ({ handle }) =>
     timelines.flatMap((t) => t.cues).find((c) => c.handle === handle)?.operation ?? 1,
-  // NOTE: fabricated shape — the real rev-481 reply is still unverified (see CLAUDE.md).
+  // Reply shape matches real rev-481 hardware: capital-M string Mode,
+  // HMSF time, full nextcue object, opacity, smptemode. No duration field.
   'Pixera.Timelines.Timeline.getTimelineInfosAsJsonString': ({ handle }) => {
     const tl = byHandle(handle);
     if (!tl) throw { code: -32000, message: 'unknown handle' };
-    return JSON.stringify({ name: tl.name, fps: tl.fps, mode: tl.transportMode });
+    const opName = { 1: 'Play', 2: 'Pause', 3: 'Stop', 4: 'Jump' };
+    const next = tl.cues[0];
+    return JSON.stringify({
+      Mode: opName[tl.transportMode] || 'Stop',
+      fps: tl.fps,
+      index: timelines.indexOf(tl),
+      name: tl.name,
+      nextcue: next
+        ? {
+            color: next.color || '#000000',
+            countdown: '00:00:10:00',
+            formattedNumber: String(next.number),
+            handle: next.handle,
+            index: 0,
+            jumpgoal: 'none',
+            jumpmode: 'none',
+            name: next.name,
+            note: next.note,
+            number: next.number,
+            operation: opName[next.operation] || 'Play',
+            time: '00:00:10:00',
+            waitDuration: 0.0,
+          }
+        : null,
+      opacity: 1.0,
+      smptemode: 'none',
+      time: hmsf(tl),
+    });
   },
   'Pixera.Compound.getTransportModeOnTimeline': ({ timelineName }) =>
     byName(timelineName)?.transportMode ?? 3,

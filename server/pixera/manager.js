@@ -16,6 +16,8 @@ import { PixeraConnection, STATUS } from './connection.js';
 
 const POLL_INTERVAL_MS = 500;
 const TRANSPORT_MODES = { play: 1, pause: 2, stop: 3 };
+// getTimelineInfosAsJsonString reports Mode as a string (capital M).
+const TRANSPORT_MODE_FROM_STRING = { play: 1, pause: 2, stop: 3 };
 
 /**
  * Normalize a cue operation to 'play' | 'pause' | 'stop' | 'jump' | null.
@@ -50,11 +52,14 @@ export class PixeraManager extends EventEmitter {
       transportMode: null, // 1 play, 2 pause, 3 stop
       currentHMSF: null,
       countdownHMSF: null,
+      nextCueName: null,
+      nextCueNumber: null,
       source: null, // which server feedback comes from: 'primary' | 'backup' | null
     };
     this._selectedHandleCache = { server: null, handle: null, name: null };
     this._pollTimer = null;
     this._polling = false;
+    this._legacyPoll = false; // sticky: getTimelineInfosAsJsonString unavailable
   }
 
   applySettings(settings) {
@@ -155,13 +160,7 @@ export class PixeraManager extends EventEmitter {
     try {
       const conn = this.preferred();
       if (!conn) {
-        this.updatePlayback({
-          selectedTimelineName: null,
-          transportMode: null,
-          currentHMSF: null,
-          countdownHMSF: null,
-          source: null,
-        });
+        this.updatePlayback(this.emptyPlayback(null));
         return;
       }
       const quiet = { timeoutMs: 2000, quiet: true };
@@ -169,47 +168,104 @@ export class PixeraManager extends EventEmitter {
       const handles = await conn.request('Pixera.Timelines.getTimelinesSelected', undefined, quiet);
       const handle = Array.isArray(handles) && handles.length > 0 ? handles[0] : null;
       if (handle == null) {
-        this.updatePlayback({
-          selectedTimelineName: null,
-          transportMode: null,
-          currentHMSF: null,
-          countdownHMSF: null,
-          source: conn.name,
-        });
+        this.updatePlayback(this.emptyPlayback(conn.name));
         return;
       }
 
-      // Resolve handle -> name only when the handle changes (cheap cache).
-      const cache = this._selectedHandleCache;
-      let name;
-      if (cache.server === conn.name && cache.handle === handle && cache.name) {
-        name = cache.name;
-      } else {
-        name = await conn.request('Pixera.Timelines.Timeline.getName', { handle }, quiet);
-        this._selectedHandleCache = { server: conn.name, handle, name };
+      // Fast path: one request returns name, mode, time, and next cue.
+      let playback = null;
+      if (!this._legacyPoll) {
+        try {
+          playback = await this.pollViaTimelineInfos(conn, handle, quiet);
+        } catch (err) {
+          if (/timed out|not connected|connection/i.test(err.message)) throw err; // transient — retry next tick
+          // Structural failure (method missing / shape change): fall back for good.
+          this._legacyPoll = true;
+          this.log.add({
+            server: conn.name,
+            dir: 'info',
+            data: `getTimelineInfosAsJsonString unusable (${err.message}); using legacy polling`,
+          });
+        }
       }
+      if (!playback) playback = await this.pollLegacy(conn, handle, quiet);
 
-      const [transportMode, currentHMSF, countdownHMSF] = await Promise.all([
-        conn.request('Pixera.Compound.getTransportModeOnTimeline', { timelineName: name }, quiet),
-        conn.request('Pixera.Compound.getCurrentHMSFOfTimeline', { name }, quiet),
-        conn
-          .request('Pixera.Compound.getCurrentCountdownHMSFOfTimeline', { name }, quiet)
-          .catch(() => null),
-      ]);
-
-      this.updatePlayback({
-        selectedTimelineName: name,
-        transportMode,
-        currentHMSF,
-        countdownHMSF,
-        source: conn.name,
-      });
+      this.updatePlayback(playback);
     } catch (err) {
       // Polling errors are expected during reconnects; log once per occurrence.
       this.log.add({ server: 'system', dir: 'error', data: `poll failed: ${err.message}` });
     } finally {
       this._polling = false;
     }
+  }
+
+  emptyPlayback(source) {
+    return {
+      selectedTimelineName: null,
+      transportMode: null,
+      currentHMSF: null,
+      countdownHMSF: null,
+      nextCueName: null,
+      nextCueNumber: null,
+      source,
+    };
+  }
+
+  /**
+   * Consolidated feedback: Timeline.getTimelineInfosAsJsonString (verified on
+   * rev-481 hardware) returns {Mode, fps, index, name, nextcue, opacity,
+   * smptemode, time} in a single round trip.
+   */
+  async pollViaTimelineInfos(conn, handle, quiet) {
+    const raw = await conn.request(
+      'Pixera.Timelines.Timeline.getTimelineInfosAsJsonString',
+      { handle },
+      quiet
+    );
+    const info = typeof raw === 'string' ? JSON.parse(raw) : raw;
+    if (!info || typeof info.name !== 'string') {
+      throw new Error('unexpected timeline info shape');
+    }
+    const nextcue = info.nextcue && typeof info.nextcue === 'object' ? info.nextcue : null;
+    return {
+      selectedTimelineName: info.name,
+      transportMode: TRANSPORT_MODE_FROM_STRING[String(info.Mode).toLowerCase()] ?? null,
+      currentHMSF: info.time ?? null,
+      countdownHMSF: nextcue?.countdown ?? null,
+      nextCueName: nextcue ? nextcue.name || null : null,
+      nextCueNumber: nextcue?.formattedNumber ?? null,
+      source: conn.name,
+    };
+  }
+
+  /** Legacy fallback: three Compound calls (pre-rev-481 safety net). */
+  async pollLegacy(conn, handle, quiet) {
+    const cache = this._selectedHandleCache;
+    let name;
+    if (cache.server === conn.name && cache.handle === handle && cache.name) {
+      name = cache.name;
+    } else {
+      name = await conn.request('Pixera.Timelines.Timeline.getName', { handle }, quiet);
+      this._selectedHandleCache = { server: conn.name, handle, name };
+    }
+
+    const [transportMode, currentHMSF, countdownHMSF] = await Promise.all([
+      conn.request('Pixera.Compound.getTransportModeOnTimeline', { timelineName: name }, quiet),
+      conn.request('Pixera.Compound.getCurrentHMSFOfTimeline', { name }, quiet),
+      conn
+        .request('Pixera.Compound.getCurrentCountdownHMSFOfTimeline', { name }, quiet)
+        .catch(() => null),
+    ]);
+
+    return {
+      selectedTimelineName: name,
+      transportMode,
+      currentHMSF,
+      countdownHMSF,
+      nextCueName: null,
+      nextCueNumber: null,
+      source: conn.name,
+    };
   }
 
   updatePlayback(next) {
@@ -273,6 +329,7 @@ export class PixeraManager extends EventEmitter {
             note: c.note ?? '',
             operation: normalizeOperation(c.operation),
             index: c.index ?? i,
+            color: typeof c.color === 'string' ? c.color : null, // '#000000' = Pixera default
           }))
           .filter((c) => c.name != null);
         if (cues.length === list.length) return cues;
@@ -300,6 +357,7 @@ export class PixeraManager extends EventEmitter {
         note,
         operation: normalizeOperation(operation),
         index: i,
+        color: null,
       });
     }
     return cues;

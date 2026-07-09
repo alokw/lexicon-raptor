@@ -128,9 +128,20 @@ function TransportPanel() {
           <span className="time" title="Elapsed (h:m:s:f)">
             ⏱ {playback.currentHMSF || '--:--:--:--'}
           </span>
-          <span className="time" title="Countdown to next cue (h:m:s:f)">
-            ⏳ {playback.countdownHMSF || '--:--:--:--'}
-          </span>
+        </div>
+        <div className="next-cue" title="Next cue on the timeline and countdown to it">
+          {playback.countdownHMSF ? (
+            <>
+              Next:{' '}
+              <strong>
+                {playback.nextCueName ||
+                  (playback.nextCueNumber ? `#${playback.nextCueNumber}` : 'cue')}
+              </strong>{' '}
+              <span className="time">⏳ {playback.countdownHMSF}</span>
+            </>
+          ) : (
+            'Next: —'
+          )}
         </div>
       </div>
       <div className="transport-buttons">

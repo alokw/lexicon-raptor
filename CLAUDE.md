@@ -62,6 +62,13 @@ Full reference lives in `pixera_api_ref/` (`pixera_api_plain_rev481.txt` = signa
   ```
   Gotchas vs. the rest of the API: `operation` is a **string** ("Play"/"Pause"/"Stop"/"Jump") here but an **int** (1–4) from `Cue.getOperation`; the field is `formattedNumber` (not "numberFormatted"); `time`/`countdown` are HMSF strings, not frames. `normalizeOperation()` in manager.js accepts both forms → lowercase strings. The mock reproduces this exact shape.
 - **Cue `operation` int enum (Cue.getOperation / createCue): 1=Play, 2=Pause, 3=Stop, 4=Jump.**
+- **`Timeline.getTimelineInfosAsJsonString` reply shape — VERIFIED on real rev-481 hardware** (2026-07). `result` is a JSON *string*:
+  ```json
+  {"Mode":"Stop","fps":60.0,"index":0,"name":"10min_countdown",
+   "nextcue":{ ...same object shape as one getCueInfosAsJsonString entry... },
+   "opacity":1.0,"smptemode":"none","time":"00:00:00:00"}
+  ```
+  Gotchas: `Mode` has a **capital M** and is a string ("Play"/"Pause"/"Stop"); `time` is current position as HMSF. **There is no duration field** — true "remaining time in timeline" is NOT available from this call (or anywhere else found in rev 481); the next-cue countdown remains the best proxy. Upside: this one call returns transport mode + current time + next-cue info (incl. `nextcue.name` and `nextcue.countdown`) and could replace the three per-poll Compound calls in `manager.pollOnce` with a single handle-based request, and would enable a "Next: <cue name>" display in the header.
 - ⚠️ **Real projects contain duplicate cue names** (e.g. "clear" ×8 on one timeline) **and unnamed cues** (`"name":""`). Name-based firing triggers the *first* match; unnamed cues cannot be fired by name at all. ImportModal flags duplicates ("duplicate" tag), disables unnamed cues ("no name" tag), and shows each cue's HMSF time to help distinguish. If exact-cue firing is ever needed, the path is: resolve per-server handle via `Timeline.getCueAtIndex(index)` → verify → `Cue.apply {handle, blendDuration}` — never persist the handle.
 - Monitoring/subscription API exists (see PDF §6–7: `pollMonitoring`, `setMonitoringEventMode`) — **not used yet**; polling was chosen for simplicity. It's the natural upgrade path if 500ms polling becomes limiting; unsolicited messages already surface via connection's `'unmatched'` event.
 
@@ -69,7 +76,7 @@ Full reference lives in `pixera_api_ref/` (`pixera_api_plain_rev481.txt` = signa
 
 Human-readable by design (users hand-edit and copy between machines). `{version, settings:{primary:{ip,port,enabled}, backup:{...}, defaultFadeMs}, cues:[{id,label,cueName,timelineName,fadeMs,notes}]}`.
 
-- `timelineName: ""` → fire on Pixera's currently-selected timeline; `fadeMs: null` → use `defaultFadeMs`. Resolution happens at fire time in the `/api/cues/:id/fire` route.
+- `timelineName: ""` → fire on Pixera's currently-selected timeline; `fadeMs: null` → use `defaultFadeMs`; `color` is `"#rrggbb"` or `null` (display-only, imported from Pixera or set in the panel). Resolution happens at fire time in the `/api/cues/:id/fire` route.
 - Writes are **atomic** (tmp+rename). Corrupt files are backed up as `show.json.invalid-<ts>`, never clobbered. All input passes `sanitizeCueInput`/`sanitizeServer`.
 - File is read **once at startup** — hand-edits need a server restart (documented; a chokidar-style watcher is a welcome future improvement).
 
@@ -83,6 +90,8 @@ WS `/ws` pushes: `state` (full snapshot on connect + after any mutation), `playb
 
 `playback.source` names the server feedback is read from: primary while connected, else backup (`manager.preferred()`); shown in the header as a "via primary/backup" tag. Both-enabled → primary; single-enabled → that one; primary lost mid-show → automatic failover to backup.
 
+Polling is consolidated: `pollOnce` → `getTimelinesSelected` + one `getTimelineInfosAsJsonString` call, which yields name/Mode/time/nextcue (`playback.nextCueName`/`nextCueNumber` drive the header's "Next:" readout). If that call fails *structurally* (method missing or shape change — not a timeout), a sticky `_legacyPoll` flag switches to the old three-Compound-calls path (`pollLegacy`) which has no next-cue info. Keep the fallback working when touching polling.
+
 ⚠️ **Route order matters**: `/api/cues/order` must stay listed *before* `/api/cues/:id` (the `:id` regex `[\w-]+` matches "order").
 
 ## Frontend conventions & gotchas
@@ -92,6 +101,8 @@ WS `/ws` pushes: `state` (full snapshot on connect + after any mutation), `playb
 - Layout: `.workspace` is the height-constrained box (`overflow:hidden`); cue grid and `.panel-scroll` scroll internally; mode toggle + panel footer stay pinned. Don't reintroduce page-level scrolling — the mode-toggle-scrolled-away bug came from that.
 - ImportModal dedup key is `` `${timelineName}||${cueName}` `` matched against existing cues; existing ones are greyed/disabled.
 - Errors surface as toasts (`toast(msg)` from store); server errors include per-server detail strings.
+- **Cue colors are dark-theme-constrained** (user requirement: never bright, text always readable). `web/src/lib/color.js#cueColorStyles(hex)` → `{accent, bg}`: accent = original hue, lightness clamped 0.45–0.65 (tile edge stripe, import swatch); bg = same hue, saturation ≤0.45, lightness forced to 0.16 (tile background tint). Near-black (`l < 0.08`, i.e. Pixera's `#000000` default) → `null` = uncolored. Text color is never derived from the cue color — don't change that.
+- `CueForm`'s reset effect deps on `JSON.stringify(initial)`, NOT the object — the panel re-renders every playback tick with a fresh `initial` object, and a reference dep would wipe in-progress edits while a timeline plays.
 
 ## Reliability invariants (don't regress these)
 
@@ -115,6 +126,7 @@ curl -s localhost:8000/api/import/cues | python3 -m json.tool
 
 ## Known unknowns / roadmap
 
-- `getCueInfosAsJsonString` shape is verified (see above); `getTimelineInfosAsJsonString` is still **unverified** on real hardware.
-- "Remaining time" is currently Pixera's *next-cue countdown* — rev 481 exposes no direct timeline duration. Candidate: parse `getTimelineInfosAsJsonString`.
+- Both `getCueInfosAsJsonString` and `getTimelineInfosAsJsonString` shapes are now verified on real hardware (see above). The mock reproduces both.
+- "Remaining time" is Pixera's *next-cue countdown* — **confirmed** that rev 481 exposes no timeline duration anywhere, so this is as good as it gets (short of summing clip end times via `getClipEndTimeInSecondsWithIndex` per layer, which is expensive).
+- Poll consolidation opportunity: `getTimelineInfosAsJsonString` returns mode+time+nextcue in one request — could replace the three Compound calls in `pollOnce` and add a "Next: <cue name>" header display.
 - Natural next features (architecture already accommodates): per-cue colors (`color` is in the verified cue info — could import into the cuelist tiles), monitoring subscriptions instead of polling, show-file hot reload, multi-page cuelists, keyboard/hotkey GO, exact-cue firing by index+verify for duplicate-name timelines.

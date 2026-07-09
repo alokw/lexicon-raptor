@@ -299,6 +299,18 @@ textarea:disabled {
   font-size: 12px;
 }
 
+.next-cue {
+  color: var(--text-dim);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  margin-top: 1px;
+}
+
+.next-cue strong {
+  color: var(--text);
+  font-weight: 600;
+}
+
 .transport-state.mode-1 {
   color: var(--green);
 }
@@ -417,6 +429,13 @@ textarea:disabled {
 .edit-mode .cue-tile {
   cursor: grab;
   touch-action: none;
+}
+
+/* Cue color: darkened background tint + accent stripe. Text stays the
+   standard light color so it's readable regardless of the Pixera color. */
+.cue-tile.colored {
+  background: var(--cue-bg);
+  box-shadow: inset 4px 0 0 var(--cue-accent);
 }
 
 .cue-tile.selected {
@@ -734,6 +753,30 @@ textarea:disabled {
 .op-jump {
   color: var(--accent);
   border: 1px solid var(--accent);
+}
+
+.color-swatch {
+  width: 10px;
+  height: 10px;
+  border-radius: 3px;
+  flex: none;
+}
+
+.color-field {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.color-field input[type='color'] {
+  width: 44px;
+  height: 28px;
+  padding: 2px;
+  cursor: pointer;
+}
+
+.color-field small {
+  color: var(--text-dim);
 }
 
 .warn-tag {

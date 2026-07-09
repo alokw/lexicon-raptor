@@ -24,6 +24,8 @@ const initialState = {
     transportMode: null,
     currentHMSF: null,
     countdownHMSF: null,
+    nextCueName: null,
+    nextCueNumber: null,
     source: null,
   },
   log: [],

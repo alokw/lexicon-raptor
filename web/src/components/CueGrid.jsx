@@ -1,6 +1,7 @@
 import React, { useRef, useState } from 'react';
 import { useStore } from '../lib/store.jsx';
 import { api } from '../lib/api.js';
+import { cueColorStyles } from '../lib/color.js';
 
 // Per zoom level (1..6): tile min-width, label font size, meta font size.
 const ZOOM_LEVELS = [
@@ -134,11 +135,14 @@ export default function CueGrid() {
           if (cue.id === selectedCueId) classes.push('selected');
           if (cue.id === draggingId) classes.push('dragging');
           if (cue.id === flashId) classes.push('fired');
+          const colors = cueColorStyles(cue.color);
+          if (colors) classes.push('colored');
           return (
             <div
               key={cue.id}
               data-cue-id={cue.id}
               className={classes.join(' ')}
+              style={colors ? { '--cue-accent': colors.accent, '--cue-bg': colors.bg } : undefined}
               onPointerDown={(e) => onTilePointerDown(e, cue)}
               onPointerMove={onTilePointerMove}
               onPointerUp={onTilePointerUp}
