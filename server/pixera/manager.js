@@ -17,6 +17,21 @@ import { PixeraConnection, STATUS } from './connection.js';
 const POLL_INTERVAL_MS = 500;
 const TRANSPORT_MODES = { play: 1, pause: 2, stop: 3 };
 
+/**
+ * Normalize a cue operation to 'play' | 'pause' | 'stop' | 'jump' | null.
+ * Real rev-481 hardware returns strings ("Pause") in getCueInfosAsJsonString,
+ * while Cue.getOperation returns the int enum (1=Play 2=Pause 3=Stop 4=Jump).
+ */
+const OP_BY_INT = { 1: 'play', 2: 'pause', 3: 'stop', 4: 'jump' };
+export function normalizeOperation(op) {
+  if (typeof op === 'number') return OP_BY_INT[op] ?? null;
+  if (typeof op === 'string') {
+    const s = op.trim().toLowerCase();
+    return ['play', 'pause', 'stop', 'jump'].includes(s) ? s : null;
+  }
+  return null;
+}
+
 export class PixeraManager extends EventEmitter {
   constructor(log) {
     super();
@@ -35,6 +50,7 @@ export class PixeraManager extends EventEmitter {
       transportMode: null, // 1 play, 2 pause, 3 stop
       currentHMSF: null,
       countdownHMSF: null,
+      source: null, // which server feedback comes from: 'primary' | 'backup' | null
     };
     this._selectedHandleCache = { server: null, handle: null, name: null };
     this._pollTimer = null;
@@ -144,6 +160,7 @@ export class PixeraManager extends EventEmitter {
           transportMode: null,
           currentHMSF: null,
           countdownHMSF: null,
+          source: null,
         });
         return;
       }
@@ -157,6 +174,7 @@ export class PixeraManager extends EventEmitter {
           transportMode: null,
           currentHMSF: null,
           countdownHMSF: null,
+          source: conn.name,
         });
         return;
       }
@@ -184,6 +202,7 @@ export class PixeraManager extends EventEmitter {
         transportMode,
         currentHMSF,
         countdownHMSF,
+        source: conn.name,
       });
     } catch (err) {
       // Polling errors are expected during reconnects; log once per occurrence.
@@ -234,7 +253,10 @@ export class PixeraManager extends EventEmitter {
   }
 
   async listCuesForTimeline(conn, handle) {
-    // Fast path: one request per timeline.
+    // Fast path: one request per timeline. Reply shape verified on rev-481
+    // hardware: JSON array of {name, number, formattedNumber, time (HMSF
+    // string), note, operation ("Play"|"Pause"|"Stop"|"Jump"), index, handle,
+    // color, countdown, jumpmode, jumpgoal, waitDuration}.
     try {
       const raw = await conn.request('Pixera.Timelines.Timeline.getCueInfosAsJsonString', {
         handle,
@@ -243,13 +265,14 @@ export class PixeraManager extends EventEmitter {
       const list = Array.isArray(parsed) ? parsed : parsed?.cues;
       if (Array.isArray(list)) {
         const cues = list
-          .map((c) => ({
-            name: c.name ?? c.cueName ?? null,
+          .map((c, i) => ({
+            name: typeof c.name === 'string' ? c.name : (c.cueName ?? null),
             number: c.number ?? null,
-            numberFormatted: c.numberFormatted ?? null,
-            timeFrames: c.time ?? null,
+            numberFormatted: c.formattedNumber ?? c.numberFormatted ?? null,
+            time: c.time ?? null, // HMSF string, e.g. "00:08:23:51"
             note: c.note ?? '',
-            operation: c.operation ?? null, // 1 Play, 2 Pause, 3 Stop, 4 Jump
+            operation: normalizeOperation(c.operation),
+            index: c.index ?? i,
           }))
           .filter((c) => c.name != null);
         if (cues.length === list.length) return cues;
@@ -261,15 +284,23 @@ export class PixeraManager extends EventEmitter {
     // Reliable path: per-cue requests.
     const cueHandles = (await conn.request('Pixera.Timelines.Timeline.getCues', { handle })) || [];
     const cues = [];
-    for (const cueHandle of cueHandles) {
-      const p = { handle: cueHandle };
+    for (let i = 0; i < cueHandles.length; i++) {
+      const p = { handle: cueHandles[i] };
       const [name, number, note, operation] = await Promise.all([
         conn.request('Pixera.Timelines.Cue.getName', p),
         conn.request('Pixera.Timelines.Cue.getNumber', p).catch(() => null),
         conn.request('Pixera.Timelines.Cue.getNote', p).catch(() => ''),
         conn.request('Pixera.Timelines.Cue.getOperation', p).catch(() => null),
       ]);
-      cues.push({ name, number, numberFormatted: null, timeFrames: null, note, operation });
+      cues.push({
+        name,
+        number,
+        numberFormatted: null,
+        time: null,
+        note,
+        operation: normalizeOperation(operation),
+        index: i,
+      });
     }
     return cues;
   }

@@ -52,9 +52,17 @@ Full reference lives in `pixera_api_ref/` (`pixera_api_plain_rev481.txt` = signa
   - `Pixera.Compound.startOpacityAnimationOfTimeline {name, fadeIn, fullFadeDuration}` — fade up/down, duration in **seconds**.
   - `Pixera.Compound.getCurrentHMSFOfTimeline {name}` / `getCurrentCountdownHMSFOfTimeline {name}` — elapsed / next-cue countdown strings `hh:mm:ss:ff`.
   - `Pixera.Timelines.getTimelinesSelected` → handles; `Timeline.getName {handle}`.
-  - `Pixera.Timelines.getTimelineNames`, `getTimelineFromName {name}`, `Timeline.getCueInfosAsJsonString {handle}` (fast import path, JSON shape **unverified against real hardware** — defensive parse with per-cue fallback in `manager.listCuesForTimeline`).
+  - `Pixera.Timelines.getTimelineNames`, `getTimelineFromName {name}`, `Timeline.getCueInfosAsJsonString {handle}` (fast import path; per-cue fallback in `manager.listCuesForTimeline`).
   - `Pixera.Utility.getApiRevision` — used as heartbeat ping.
-- **Cue `operation` enum: 1=Play, 2=Pause, 3=Stop, 4=Jump** (badges in ImportModal).
+- **`getCueInfosAsJsonString` reply shape — VERIFIED on real rev-481 hardware** (2026-07). `result` is a JSON *string* containing an array of:
+  ```json
+  {"color":"#8D1D2C","countdown":"00:08:11:57","formattedNumber":"1","handle":6558541823088715,
+   "index":13,"jumpgoal":"none","jumpmode":"To Label","name":"Rest in keynote","note":"",
+   "number":1,"operation":"Pause","time":"00:08:11:57","waitDuration":0.0}
+  ```
+  Gotchas vs. the rest of the API: `operation` is a **string** ("Play"/"Pause"/"Stop"/"Jump") here but an **int** (1–4) from `Cue.getOperation`; the field is `formattedNumber` (not "numberFormatted"); `time`/`countdown` are HMSF strings, not frames. `normalizeOperation()` in manager.js accepts both forms → lowercase strings. The mock reproduces this exact shape.
+- **Cue `operation` int enum (Cue.getOperation / createCue): 1=Play, 2=Pause, 3=Stop, 4=Jump.**
+- ⚠️ **Real projects contain duplicate cue names** (e.g. "clear" ×8 on one timeline) **and unnamed cues** (`"name":""`). Name-based firing triggers the *first* match; unnamed cues cannot be fired by name at all. ImportModal flags duplicates ("duplicate" tag), disables unnamed cues ("no name" tag), and shows each cue's HMSF time to help distinguish. If exact-cue firing is ever needed, the path is: resolve per-server handle via `Timeline.getCueAtIndex(index)` → verify → `Cue.apply {handle, blendDuration}` — never persist the handle.
 - Monitoring/subscription API exists (see PDF §6–7: `pollMonitoring`, `setMonitoringEventMode`) — **not used yet**; polling was chosen for simplicity. It's the natural upgrade path if 500ms polling becomes limiting; unsolicited messages already surface via connection's `'unmatched'` event.
 
 ## Show file (`data/show.json`)
@@ -69,7 +77,11 @@ Human-readable by design (users hand-edit and copy between machines). `{version,
 
 `GET /api/state` · `PUT /api/settings` · `POST /api/cues` · `PUT /api/cues/order {ids}` · `PUT /api/cues/:id` · `DELETE /api/cues/:id` · `POST /api/cues/:id/fire` · `POST /api/transport {action: play|pause|stop|fadeUp|fadeDown}` · `GET /api/import/cues` · `GET /api/log` · `GET /api/health`.
 
+Debug/exploration (traffic shows in the Debug panel too): `GET /api/debug/timeline-info?timeline=Name` (defaults to selected timeline; resolves the handle and calls `getTimelineInfosAsJsonString`) · `POST /api/debug/rpc {method:"Pixera.*", params?, server?: "primary"|"backup"}` — use this to capture real reply samples before coding against an unverified call.
+
 WS `/ws` pushes: `state` (full snapshot on connect + after any mutation), `playback`, `connections`, `log` (single entry), `logHistory` (on connect).
+
+`playback.source` names the server feedback is read from: primary while connected, else backup (`manager.preferred()`); shown in the header as a "via primary/backup" tag. Both-enabled → primary; single-enabled → that one; primary lost mid-show → automatic failover to backup.
 
 ⚠️ **Route order matters**: `/api/cues/order` must stay listed *before* `/api/cues/:id` (the `:id` regex `[\w-]+` matches "order").
 
@@ -103,6 +115,6 @@ curl -s localhost:8000/api/import/cues | python3 -m json.tool
 
 ## Known unknowns / roadmap
 
-- `getCueInfosAsJsonString` and `getTimelineInfosAsJsonString` reply shapes are guessed from the API docs, not verified on real hardware. Fast-path parser is defensive; tighten once real samples exist.
+- `getCueInfosAsJsonString` shape is verified (see above); `getTimelineInfosAsJsonString` is still **unverified** on real hardware.
 - "Remaining time" is currently Pixera's *next-cue countdown* — rev 481 exposes no direct timeline duration. Candidate: parse `getTimelineInfosAsJsonString`.
-- Natural next features (architecture already accommodates): per-cue colors (`Cue.getColor` exists), monitoring subscriptions instead of polling, show-file hot reload, multi-page cuelists, keyboard/hotkey GO.
+- Natural next features (architecture already accommodates): per-cue colors (`color` is in the verified cue info — could import into the cuelist tiles), monitoring subscriptions instead of polling, show-file hot reload, multi-page cuelists, keyboard/hotkey GO, exact-cue firing by index+verify for duplicate-name timelines.

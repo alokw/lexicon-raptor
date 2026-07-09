@@ -112,6 +112,14 @@ function TransportPanel() {
       <div className="timeline-feedback">
         <div className="timeline-name" title="Timeline currently selected in Pixera">
           {playback.selectedTimelineName || (anyConnected ? 'No timeline selected' : 'Offline')}
+          {playback.source && (
+            <span
+              className={`via-tag via-${playback.source}`}
+              title={`Feedback is read from the ${playback.source} server (primary is preferred while connected)`}
+            >
+              via {playback.source}
+            </span>
+          )}
         </div>
         <div className="timeline-times">
           <span className={`transport-state mode-${playback.transportMode || 0}`}>

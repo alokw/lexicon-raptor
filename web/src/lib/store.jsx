@@ -24,6 +24,7 @@ const initialState = {
     transportMode: null,
     currentHMSF: null,
     countdownHMSF: null,
+    source: null,
   },
   log: [],
   // client-only UI state

@@ -33,6 +33,9 @@ const timelines = [
     cues: [
       { handle: 5101, name: 'Intro Stinger', number: 1, note: '', operation: 1 },
       { handle: 5102, name: 'Speaker Support', number: 2, note: '', operation: 2 },
+      // Real projects contain these — exercise the import UI warnings:
+      { handle: 5103, name: 'Speaker Support', number: 3, note: 'dup name', operation: 2 },
+      { handle: 5104, name: '', number: 4, note: 'unnamed cue', operation: 3 },
     ],
   },
   { handle: 1003, name: 'Rehearsal Scratch', fps: 25, transportMode: 3, timeFrames: 0, cues: [] },
@@ -65,18 +68,27 @@ const handlers = {
   'Pixera.Timelines.getTimelinesSelected': () => (selectedTimeline ? [selectedTimeline.handle] : []),
   'Pixera.Timelines.getTimelineFromName': ({ name }) => byName(name)?.handle ?? null,
   'Pixera.Timelines.Timeline.getName': ({ handle }) => byHandle(handle)?.name ?? null,
+  // Reply shape matches real rev-481 hardware (operation as string,
+  // formattedNumber, time as HMSF string, color, countdown, jump fields).
   'Pixera.Timelines.Timeline.getCueInfosAsJsonString': ({ handle }) => {
     const tl = byHandle(handle);
     if (!tl) throw { code: -32000, message: 'unknown handle' };
+    const opName = { 1: 'Play', 2: 'Pause', 3: 'Stop', 4: 'Jump' };
     return JSON.stringify(
       tl.cues.map((c, i) => ({
+        color: '#000000',
+        countdown: `00:00:${String(i * 5).padStart(2, '0')}:00`,
+        formattedNumber: String(c.number),
+        handle: c.handle,
         index: i,
+        jumpgoal: 'none',
+        jumpmode: 'none',
         name: c.name,
-        number: c.number,
-        numberFormatted: String(c.number),
-        time: i * 300,
         note: c.note,
-        operation: c.operation,
+        number: c.number,
+        operation: opName[c.operation] || 'Play',
+        time: `00:0${i}:00:00`,
+        waitDuration: 0.0,
       }))
     );
   },
@@ -90,6 +102,12 @@ const handlers = {
     timelines.flatMap((t) => t.cues).find((c) => c.handle === handle)?.note ?? '',
   'Pixera.Timelines.Cue.getOperation': ({ handle }) =>
     timelines.flatMap((t) => t.cues).find((c) => c.handle === handle)?.operation ?? 1,
+  // NOTE: fabricated shape — the real rev-481 reply is still unverified (see CLAUDE.md).
+  'Pixera.Timelines.Timeline.getTimelineInfosAsJsonString': ({ handle }) => {
+    const tl = byHandle(handle);
+    if (!tl) throw { code: -32000, message: 'unknown handle' };
+    return JSON.stringify({ name: tl.name, fps: tl.fps, mode: tl.transportMode });
+  },
   'Pixera.Compound.getTransportModeOnTimeline': ({ timelineName }) =>
     byName(timelineName)?.transportMode ?? 3,
   'Pixera.Compound.setTransportModeOnTimeline': ({ timelineName, mode }) => {

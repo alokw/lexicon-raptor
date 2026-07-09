@@ -186,6 +186,47 @@ const routes = [
     handler: async (req, res) => sendJson(res, 200, { entries: log.recent(1000) }),
   },
   {
+    // Debug helper: fetch getTimelineInfosAsJsonString for a timeline
+    // (?timeline=Name, defaults to the selected timeline). Open in a browser.
+    method: 'GET',
+    pattern: /^\/api\/debug\/timeline-info$/,
+    handler: async (req, res, match, url) => {
+      const conn = pixera.preferred();
+      if (!conn) return sendJson(res, 503, { error: 'no Pixera server connected' });
+      const name =
+        url.searchParams.get('timeline') || pixera.playback.selectedTimelineName;
+      if (!name) return sendJson(res, 409, { error: 'no timeline given or selected' });
+      const handle = await conn.request('Pixera.Timelines.getTimelineFromName', { name });
+      if (handle == null) return sendJson(res, 404, { error: `timeline not found: ${name}` });
+      const raw = await conn.request('Pixera.Timelines.Timeline.getTimelineInfosAsJsonString', {
+        handle,
+      });
+      let parsed = null;
+      try {
+        parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
+      } catch {
+        /* leave parsed null; raw still returned */
+      }
+      sendJson(res, 200, { server: conn.name, timeline: name, raw, parsed });
+    },
+  },
+  {
+    // Debug helper: send an arbitrary read query to Pixera.
+    // curl -X POST /api/debug/rpc -d '{"method":"Pixera...","params":{...}}'
+    method: 'POST',
+    pattern: /^\/api\/debug\/rpc$/,
+    handler: async (req, res) => {
+      const { method, params, server } = await readJsonBody(req);
+      if (typeof method !== 'string' || !method.startsWith('Pixera.')) {
+        return sendJson(res, 400, { error: 'method must be a "Pixera.*" string' });
+      }
+      const conn = server ? pixera.connections[server] : pixera.preferred();
+      if (!conn?.isConnected) return sendJson(res, 503, { error: 'server not connected' });
+      const result = await conn.request(method, params);
+      sendJson(res, 200, { server: conn.name, result });
+    },
+  },
+  {
     method: 'GET',
     pattern: /^\/api\/health$/,
     handler: async (req, res) => sendJson(res, 200, { ok: true }),

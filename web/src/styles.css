@@ -263,6 +263,27 @@ textarea:disabled {
   font-weight: 600;
 }
 
+.via-tag {
+  margin-left: 8px;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  border-radius: 4px;
+  padding: 1px 6px;
+  vertical-align: middle;
+}
+
+.via-primary {
+  color: var(--accent);
+  border: 1px solid var(--accent);
+}
+
+.via-backup {
+  color: var(--amber);
+  border: 1px solid var(--amber);
+}
+
 .timeline-times {
   display: flex;
   gap: 12px;
@@ -713,6 +734,16 @@ textarea:disabled {
 .op-jump {
   color: var(--accent);
   border: 1px solid var(--accent);
+}
+
+.warn-tag {
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--amber);
+  border: 1px solid var(--amber);
+  border-radius: 4px;
+  padding: 1px 5px;
+  flex: none;
 }
 
 .import-timeline h3 {

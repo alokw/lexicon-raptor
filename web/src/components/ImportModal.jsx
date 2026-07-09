@@ -2,14 +2,15 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { useStore } from '../lib/store.jsx';
 import { api } from '../lib/api.js';
 
+// Cues are identified by timeline + cue name (that's also how they're fired).
 const keyOf = (timelineName, cueName) => `${timelineName}||${cueName}`;
 
-// Pixera cue operation modes.
+// Cue operation modes (normalized server-side to lowercase strings).
 const OPERATIONS = {
-  1: { label: 'PLAY', className: 'op-play' },
-  2: { label: 'PAUSE', className: 'op-pause' },
-  3: { label: 'STOP', className: 'op-stop' },
-  4: { label: 'JUMP', className: 'op-jump' },
+  play: { label: 'PLAY', className: 'op-play' },
+  pause: { label: 'PAUSE', className: 'op-pause' },
+  stop: { label: 'STOP', className: 'op-stop' },
+  jump: { label: 'JUMP', className: 'op-jump' },
 };
 
 export default function ImportModal({ onClose }) {
@@ -23,6 +24,22 @@ export default function ImportModal({ onClose }) {
     () => new Set(state.cues.map((c) => keyOf(c.timelineName, c.cueName))),
     [state.cues]
   );
+
+  // Duplicate cue names within a timeline can't be distinguished when firing
+  // by name (Pixera triggers the first match) — flag them for the operator.
+  const duplicateKeys = useMemo(() => {
+    const seen = new Set();
+    const dups = new Set();
+    for (const tl of timelines || []) {
+      for (const cue of tl.cues) {
+        if (!cue.name) continue;
+        const key = keyOf(tl.timelineName, cue.name);
+        if (seen.has(key)) dups.add(key);
+        seen.add(key);
+      }
+    }
+    return dups;
+  }, [timelines]);
 
   async function load() {
     setTimelines(null);
@@ -54,6 +71,7 @@ export default function ImportModal({ onClose }) {
       const next = new Set(prev);
       for (const tl of timelines || []) {
         for (const cue of tl.cues) {
+          if (!cue.name) continue; // unnamed cues can't be fired by name
           if (operation != null && cue.operation !== operation) continue;
           const key = keyOf(tl.timelineName, cue.name);
           if (!existing.has(key)) next.add(key);
@@ -67,11 +85,14 @@ export default function ImportModal({ onClose }) {
     if (checked.size === 0) return;
     setAdding(true);
     let added = 0;
+    const done = new Set(); // guard: duplicate names share a key — add once
     try {
       for (const tl of timelines) {
         for (const cue of tl.cues) {
+          if (!cue.name) continue;
           const key = keyOf(tl.timelineName, cue.name);
-          if (!checked.has(key)) continue;
+          if (!checked.has(key) || done.has(key)) continue;
+          done.add(key);
           await api.addCue({
             label: cue.name,
             cueName: cue.name,
@@ -111,10 +132,10 @@ export default function ImportModal({ onClose }) {
             <button className="btn btn-sm" disabled={adding} onClick={() => selectAll(null)}>
               All
             </button>
-            <button className="btn btn-sm" disabled={adding} onClick={() => selectAll(1)}>
+            <button className="btn btn-sm" disabled={adding} onClick={() => selectAll('play')}>
               All Play
             </button>
-            <button className="btn btn-sm" disabled={adding} onClick={() => selectAll(2)}>
+            <button className="btn btn-sm" disabled={adding} onClick={() => selectAll('pause')}>
               All Pause
             </button>
             <button
@@ -144,26 +165,40 @@ export default function ImportModal({ onClose }) {
               {tl.error && <p className="hint">Error: {tl.error}</p>}
               {tl.cues.length === 0 && !tl.error && <p className="hint">No cues.</p>}
               <ul className="import-cue-list">
-                {tl.cues.map((cue) => {
+                {tl.cues.map((cue, i) => {
                   const key = keyOf(tl.timelineName, cue.name);
-                  const exists = existing.has(key);
+                  const unnamed = !cue.name;
+                  const exists = !unnamed && existing.has(key);
+                  const disabled = unnamed || exists || adding;
                   return (
-                    <li key={key} className={exists ? 'exists' : ''}>
-                      <label>
+                    <li key={`${key}#${cue.index ?? i}`} className={disabled ? 'exists' : ''}>
+                      <label
+                        title={
+                          unnamed
+                            ? 'This cue has no name in Pixera, so it cannot be fired by name. Name it in Pixera first.'
+                            : duplicateKeys.has(key)
+                              ? 'Several cues share this name — firing by name triggers the first one on the timeline.'
+                              : undefined
+                        }
+                      >
                         <input
                           type="checkbox"
-                          disabled={exists || adding}
+                          disabled={disabled}
                           checked={exists || checked.has(key)}
                           onChange={() => toggle(key)}
                         />
-                        <span className="import-cue-name">{cue.name}</span>
-                        {cue.numberFormatted != null && (
-                          <span className="import-cue-number">#{cue.numberFormatted}</span>
-                        )}
+                        <span className="import-cue-name">
+                          {unnamed ? '(unnamed)' : cue.name}
+                        </span>
+                        {cue.time && <span className="import-cue-number">{cue.time}</span>}
                         {OPERATIONS[cue.operation] && (
                           <span className={`op-badge ${OPERATIONS[cue.operation].className}`}>
                             {OPERATIONS[cue.operation].label}
                           </span>
+                        )}
+                        {unnamed && <span className="warn-tag">no name</span>}
+                        {!unnamed && duplicateKeys.has(key) && (
+                          <span className="warn-tag">duplicate</span>
                         )}
                         {exists && <span className="import-exists-tag">in cuelist</span>}
                       </label>
@@ -177,7 +212,7 @@ export default function ImportModal({ onClose }) {
 
         <footer className="modal-footer">
           <span className="hint">
-            {checked.size} selected · cues already in the cuelist are greyed out
+            {checked.size} selected · greyed cues are already in the cuelist or unnamed
           </span>
           <button
             className="btn btn-primary"
