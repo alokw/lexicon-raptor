@@ -46,7 +46,7 @@ Switch with the **Shortcuts / Cue List** buttons under the logo.
 
 ### Shortcuts
 
-![Shortcuts view — cuelist of GO buttons](docs/screenshots/shortcuts-view.png)
+![Shortcuts view — cuelist of GO buttons](docs/screenshots/shortcuts1.png)
 
 Big 16:9 GO buttons for the cues *you* curated.
 
@@ -56,7 +56,7 @@ Big 16:9 GO buttons for the cues *you* curated.
 
 ### Cue List
 
-![Cue List view — timelines and per-cue transport](docs/screenshots/cuelist-view.png)
+![Cue List view — timelines and per-cue transport](docs/screenshots/cuelist1.png)
 
 Drive whole timelines without curating anything first.
 
