@@ -46,6 +46,8 @@ Switch with the **Shortcuts / Cue List** buttons under the logo.
 
 ### Shortcuts
 
+![Shortcuts view — cuelist of GO buttons](docs/screenshots/shortcuts-view.png)
+
 Big 16:9 GO buttons for the cues *you* curated.
 
 - **Run mode:** press to fire (fires on pointer-down for snappiness). Buttons flash green when the GO is sent, red if a server rejected it.
@@ -53,6 +55,8 @@ Big 16:9 GO buttons for the cues *you* curated.
 - **Import** pulls every cue from every timeline on the connected server (duplicates and unnamed cues are flagged; already-imported cues are greyed out).
 
 ### Cue List
+
+![Cue List view — timelines and per-cue transport](docs/screenshots/cuelist-view.png)
 
 Drive whole timelines without curating anything first.
 
