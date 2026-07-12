@@ -15,6 +15,7 @@ import { EventEmitter } from 'node:events';
 import { PixeraConnection, STATUS } from './connection.js';
 
 const POLL_INTERVAL_MS = 500;
+const TIMELINES_POLL_INTERVAL_MS = 1000;
 const TRANSPORT_MODES = { play: 1, pause: 2, stop: 3 };
 // getTimelineInfosAsJsonString reports Mode as a string (capital M).
 const TRANSPORT_MODE_FROM_STRING = { play: 1, pause: 2, stop: 3 };
@@ -34,6 +35,26 @@ export function normalizeOperation(op) {
   return null;
 }
 
+/** Shared ≥1-server-must-succeed semantics for fan-out commands. */
+function collectFanoutResults(results, targets) {
+  const failures = results
+    .map((r, i) => ({ r, name: targets[i].name }))
+    .filter(({ r }) => r.status === 'rejected')
+    .map(({ r, name }) => `${name}: ${r.reason.message}`);
+  if (failures.length === targets.length) {
+    throw new Error(failures.join('; '));
+  }
+  return { sentTo: targets.map((t) => t.name), failures };
+}
+
+/** "hh:mm:ss:ff" → frames. Throws on malformed input. */
+export function hmsfToFrames(hmsf, fps) {
+  const m = /^(\d+):(\d+):(\d+):(\d+)$/.exec(String(hmsf).trim());
+  if (!m) throw new Error(`invalid HMSF time: ${hmsf}`);
+  const [h, min, s, f] = m.slice(1).map(Number);
+  return Math.round((h * 3600 + min * 60 + s) * fps + f);
+}
+
 export class PixeraManager extends EventEmitter {
   constructor(log) {
     super();
@@ -44,7 +65,14 @@ export class PixeraManager extends EventEmitter {
     };
     for (const [name, conn] of Object.entries(this.connections)) {
       conn.on('traffic', (entry) => this.log.add({ server: name, ...entry }));
-      conn.on('status', () => this.emit('connections', this.getConnectionStates()));
+      conn.on('status', () => {
+        // Handles can change across reconnects/project loads — drop this
+        // server's cached timeline handles whenever its status flips.
+        for (const key of this._tlHandleCache?.keys() ?? []) {
+          if (key.startsWith(`${name}|`)) this._tlHandleCache.delete(key);
+        }
+        this.emit('connections', this.getConnectionStates());
+      });
     }
 
     this.playback = {
@@ -57,9 +85,18 @@ export class PixeraManager extends EventEmitter {
       source: null, // which server feedback comes from: 'primary' | 'backup' | null
     };
     this._selectedHandleCache = { server: null, handle: null, name: null };
+    this._fpsCache = new Map(); // timelineName -> fps, refreshed by polling
     this._pollTimer = null;
     this._polling = false;
     this._legacyPoll = false; // sticky: getTimelineInfosAsJsonString unavailable
+
+    // All-timelines status (Cue List view). Polled only while a browser is
+    // connected — see setTimelinesPolling().
+    this.timelines = [];
+    this._tlHandleCache = new Map(); // `${server}|${timelineName}` -> handle
+    this._tlPollTimer = null;
+    this._tlPolling = false;
+    this._tlJson = null;
   }
 
   applySettings(settings) {
@@ -99,14 +136,7 @@ export class PixeraManager extends EventEmitter {
     const results = await Promise.allSettled(
       targets.map((c) => c.request(method, params, opts))
     );
-    const failures = results
-      .map((r, i) => ({ r, name: targets[i].name }))
-      .filter(({ r }) => r.status === 'rejected')
-      .map(({ r, name }) => `${name}: ${r.reason.message}`);
-    if (failures.length === targets.length) {
-      throw new Error(failures.join('; '));
-    }
-    return { sentTo: targets.map((t) => t.name), failures };
+    return collectFanoutResults(results, targets);
   }
 
   // ---- Control actions -------------------------------------------------
@@ -133,13 +163,78 @@ export class PixeraManager extends EventEmitter {
     );
   }
 
+  /**
+   * startOpacityAnimation's fullFadeDuration is in *frames*, not seconds
+   * (sending seconds made Pixera fade in 1 frame and overwrite its fade-time
+   * field to 1 frame). Convert via the timeline's fps.
+   */
   async fadeOpacity(fadeIn, timelineName, fadeMs) {
     if (!timelineName) throw new Error('no timeline selected');
+    const fps = await this.getTimelineFps(timelineName);
     return this.sendToAll(
       'Pixera.Compound.startOpacityAnimationOfTimeline',
-      { name: timelineName, fadeIn, fullFadeDuration: (fadeMs ?? 1000) / 1000 },
+      { name: timelineName, fadeIn, fullFadeDuration: ((fadeMs ?? 1000) / 1000) * fps },
       { timeoutMs: 3000 }
     );
+  }
+
+  /**
+   * fps of a timeline. Served from cache when possible — the fast poll path
+   * refreshes the selected timeline's fps every 500ms, so fades on the
+   * selected timeline normally cost no extra round trip.
+   */
+  async getTimelineFps(timelineName) {
+    const cached = this._fpsCache.get(timelineName);
+    if (cached) return cached;
+    const conn = this.preferred();
+    if (!conn) throw new Error('no Pixera server connected');
+    const fps = await conn.request(
+      'Pixera.Compound.getFpsOfTimeline',
+      { name: timelineName },
+      { timeoutMs: 2000 }
+    );
+    if (!Number.isFinite(fps) || fps <= 0) {
+      throw new Error(`could not determine fps of timeline "${timelineName}"`);
+    }
+    this._fpsCache.set(timelineName, fps);
+    return fps;
+  }
+
+  /**
+   * Fade the timeline to a cue's time and land in the given transport mode
+   * (1=play, 2=pause). Timeline.blendToTimeWithTransportMode is handle-based,
+   * so each server resolves its *own* handle by name at call time — handles
+   * are never shared between servers or persisted. goalTime and blendDuration
+   * are in frames (like startOpacityAnimation).
+   */
+  async blendToCue({ timelineName, timeHMSF, transportMode, fadeMs }) {
+    if (!timelineName) throw new Error('timeline name is required');
+    if (transportMode !== 1 && transportMode !== 2) {
+      throw new Error('transportMode must be 1 (play) or 2 (pause)');
+    }
+    const targets = this.activeConnections();
+    if (targets.length === 0) throw new Error('no Pixera server connected');
+
+    const fps = await this.getTimelineFps(timelineName);
+    const goalTime = hmsfToFrames(timeHMSF, fps);
+    const blendDuration = ((fadeMs ?? 1000) / 1000) * fps;
+
+    const results = await Promise.allSettled(
+      targets.map(async (c) => {
+        const handle = await c.request(
+          'Pixera.Timelines.getTimelineFromName',
+          { name: timelineName },
+          { timeoutMs: 3000 }
+        );
+        if (handle == null) throw new Error(`timeline not found: ${timelineName}`);
+        return c.request(
+          'Pixera.Timelines.Timeline.blendToTimeWithTransportMode',
+          { handle, goalTime, blendDuration, transportMode },
+          { timeoutMs: 3000 }
+        );
+      })
+    );
+    return { ...collectFanoutResults(results, targets), resolved: { goalTime, blendDuration, fps } };
   }
 
   // ---- Feedback polling --------------------------------------------------
@@ -226,6 +321,7 @@ export class PixeraManager extends EventEmitter {
     if (!info || typeof info.name !== 'string') {
       throw new Error('unexpected timeline info shape');
     }
+    if (Number.isFinite(info.fps) && info.fps > 0) this._fpsCache.set(info.name, info.fps);
     const nextcue = info.nextcue && typeof info.nextcue === 'object' ? info.nextcue : null;
     return {
       selectedTimelineName: info.name,
@@ -273,6 +369,100 @@ export class PixeraManager extends EventEmitter {
     if (!changed) return;
     this.playback = { ...this.playback, ...next };
     this.emit('playback', this.playback);
+  }
+
+  // ---- All-timelines status polling (Cue List view) ----------------------
+
+  /**
+   * The all-timelines poll costs one request per timeline per tick, so it only
+   * runs while at least one browser is connected (index.js toggles this on
+   * WS connect/disconnect). The 500ms selected-timeline poll is unaffected.
+   */
+  setTimelinesPolling(enabled) {
+    if (enabled && !this._tlPollTimer) {
+      this._tlPollTimer = setInterval(() => this.pollTimelinesOnce(), TIMELINES_POLL_INTERVAL_MS);
+      this.pollTimelinesOnce();
+    } else if (!enabled && this._tlPollTimer) {
+      clearInterval(this._tlPollTimer);
+      this._tlPollTimer = null;
+    }
+  }
+
+  async timelineHandle(conn, name, opts) {
+    const key = `${conn.name}|${name}`;
+    const cached = this._tlHandleCache.get(key);
+    if (cached != null) return cached;
+    const handle = await conn.request('Pixera.Timelines.getTimelineFromName', { name }, opts);
+    if (handle != null) this._tlHandleCache.set(key, handle);
+    return handle;
+  }
+
+  async pollTimelinesOnce() {
+    if (this._tlPolling) return; // don't stack slow polls
+    this._tlPolling = true;
+    try {
+      const conn = this.preferred();
+      if (!conn) {
+        this.updateTimelines([]);
+        return;
+      }
+      const quiet = { timeoutMs: 2000, quiet: true };
+      const names = (await conn.request('Pixera.Timelines.getTimelineNames', undefined, quiet)) || [];
+      const list = await Promise.all(
+        names.map(async (name) => {
+          try {
+            const handle = await this.timelineHandle(conn, name, quiet);
+            if (handle == null) return null;
+            const raw = await conn.request(
+              'Pixera.Timelines.Timeline.getTimelineInfosAsJsonString',
+              { handle },
+              quiet
+            );
+            const info = typeof raw === 'string' ? JSON.parse(raw) : raw;
+            if (Number.isFinite(info?.fps) && info.fps > 0) this._fpsCache.set(name, info.fps);
+            return {
+              name,
+              mode: TRANSPORT_MODE_FROM_STRING[String(info?.Mode).toLowerCase()] ?? null,
+              timeHMSF: info?.time ?? null,
+              opacity: typeof info?.opacity === 'number' ? info.opacity : null,
+              fps: Number.isFinite(info?.fps) ? info.fps : null,
+              nextCueName: info?.nextcue?.name || null,
+            };
+          } catch {
+            // Stale handle (project reload) or transient failure: forget the
+            // handle and let the next tick re-resolve it.
+            this._tlHandleCache.delete(`${conn.name}|${name}`);
+            return null;
+          }
+        })
+      );
+      this.updateTimelines(list.filter(Boolean));
+    } catch (err) {
+      this.log.add({ server: 'system', dir: 'error', data: `timelines poll failed: ${err.message}` });
+    } finally {
+      this._tlPolling = false;
+    }
+  }
+
+  updateTimelines(next) {
+    const json = JSON.stringify(next);
+    if (json === this._tlJson) return;
+    this._tlJson = json;
+    this.timelines = next;
+    this.emit('timelines', next);
+  }
+
+  /** Ordered cue list of one timeline, with fps for client-side frame math. */
+  async getTimelineCues(timelineName) {
+    const conn = this.preferred();
+    if (!conn) throw new Error('no Pixera server connected');
+    const handle = await conn.request('Pixera.Timelines.getTimelineFromName', {
+      name: timelineName,
+    });
+    if (handle == null) throw new Error(`timeline not found: ${timelineName}`);
+    const cues = await this.listCuesForTimeline(conn, handle);
+    const fps = await this.getTimelineFps(timelineName).catch(() => null);
+    return { timelineName, fps, cues };
   }
 
   // ---- Import: enumerate all cues on all timelines -----------------------
@@ -365,6 +555,7 @@ export class PixeraManager extends EventEmitter {
 
   shutdown() {
     this.stopPolling();
+    this.setTimelinesPolling(false);
     for (const conn of Object.values(this.connections)) conn.teardown();
   }
 }

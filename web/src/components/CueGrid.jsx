@@ -16,12 +16,13 @@ const DRAG_THRESHOLD_PX = 8;
 
 export default function CueGrid() {
   const { state, dispatch, toast } = useStore();
-  const { cues, mode, selectedCueId, zoom } = state;
+  const { cues, mode, selectedCueId, selectedCueIds, zoom } = state;
   const isEdit = mode === 'edit';
 
   const [previewOrder, setPreviewOrder] = useState(null); // ids during drag
   const [draggingId, setDraggingId] = useState(null);
   const [flashId, setFlashId] = useState(null);
+  const [failedId, setFailedId] = useState(null);
   const dragRef = useRef(null);
 
   const orderedCues = previewOrder
@@ -35,6 +36,11 @@ export default function CueGrid() {
     try {
       await api.fireCue(cue.id);
     } catch (err) {
+      // Swap the optimistic green flash for a red one so a failed GO is
+      // unmistakable even without reading the toast.
+      setFlashId((f) => (f === cue.id ? null : f));
+      setFailedId(cue.id);
+      setTimeout(() => setFailedId((f) => (f === cue.id ? null : f)), 900);
       toast(`GO failed — ${err.message}`);
     }
   }
@@ -46,6 +52,12 @@ export default function CueGrid() {
     if (!isEdit) {
       // Run mode: fire immediately on press (fast for live operation).
       fireCue(cue);
+      return;
+    }
+
+    // Ctrl/Cmd-click: toggle multi-selection (no drag).
+    if (e.ctrlKey || e.metaKey) {
+      dispatch({ type: 'selectCue', id: cue.id, multi: true });
       return;
     }
 
@@ -132,9 +144,10 @@ export default function CueGrid() {
       <div className="cue-grid">
         {orderedCues.map((cue) => {
           const classes = ['cue-tile'];
-          if (cue.id === selectedCueId) classes.push('selected');
+          if (cue.id === selectedCueId || selectedCueIds.includes(cue.id)) classes.push('selected');
           if (cue.id === draggingId) classes.push('dragging');
           if (cue.id === flashId) classes.push('fired');
+          if (cue.id === failedId) classes.push('fire-failed');
           const colors = cueColorStyles(cue.color);
           if (colors) classes.push('colored');
           return (

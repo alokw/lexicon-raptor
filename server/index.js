@@ -10,6 +10,7 @@ import { WebSocketServer } from 'ws';
 
 import { CommsLog } from './comms-log.js';
 import { ShowStore } from './show-store.js';
+import { OscListener } from './osc.js';
 import { PixeraManager } from './pixera/manager.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -18,11 +19,24 @@ const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, '..', 'data');
 const WEB_DIST = process.env.WEB_DIST || path.join(__dirname, '..', 'web', 'dist');
 
 const log = new CommsLog();
-const store = new ShowStore(path.join(DATA_DIR, 'show.json'));
+const store = new ShowStore(DATA_DIR);
 const pixera = new PixeraManager(log);
 
 pixera.applySettings(store.settings);
 pixera.startPolling();
+
+// ---------------------------------------------------------------------------
+// OSC remote control (UDP). /raptor/go toggles play/pause like the Space key.
+// ---------------------------------------------------------------------------
+const OSC_COMMANDS = { '/raptor/go': 'go', '/raptor/play': 'play', '/raptor/pause': 'pause', '/raptor/stop': 'stop' };
+
+const osc = new OscListener(log, async (addr) => {
+  const cmd = OSC_COMMANDS[addr];
+  if (!cmd) return; // unrecognized addresses are logged by the listener, nothing more
+  const action = cmd === 'go' ? (pixera.playback.transportMode === 1 ? 'pause' : 'play') : cmd;
+  await pixera.transport(action, pixera.playback.selectedTimelineName);
+});
+osc.configure(store.settings.shortcuts);
 
 // ---------------------------------------------------------------------------
 // WebSocket push
@@ -38,6 +52,7 @@ function broadcast(msg) {
 
 pixera.on('playback', (playback) => broadcast({ type: 'playback', playback }));
 pixera.on('connections', (connections) => broadcast({ type: 'connections', connections }));
+pixera.on('timelines', (timelines) => broadcast({ type: 'timelines', timelines }));
 log.on('entry', (entry) => broadcast({ type: 'log', entry }));
 
 function fullState() {
@@ -45,8 +60,10 @@ function fullState() {
     type: 'state',
     settings: store.settings,
     cues: store.cues,
+    activeShow: store.activeFile,
     connections: pixera.getConnectionStates(),
     playback: pixera.playback,
+    timelines: pixera.timelines,
   };
 }
 
@@ -57,6 +74,10 @@ function broadcastState() {
 wss.on('connection', (ws) => {
   ws.send(JSON.stringify(fullState()));
   ws.send(JSON.stringify({ type: 'logHistory', entries: log.recent(500) }));
+  // The per-timeline status poll is only worth its traffic while someone is
+  // actually watching the dashboard.
+  pixera.setTimelinesPolling(true);
+  ws.on('close', () => pixera.setTimelinesPolling(wss.clients.size > 0));
 });
 
 // ---------------------------------------------------------------------------
@@ -94,6 +115,7 @@ const routes = [
       const body = await readJsonBody(req);
       const settings = store.updateSettings(body);
       pixera.applySettings(settings);
+      osc.configure(settings.shortcuts);
       broadcastState();
       sendJson(res, 200, { settings });
     },
@@ -161,8 +183,10 @@ const routes = [
     method: 'POST',
     pattern: /^\/api\/transport$/,
     handler: async (req, res) => {
-      const { action } = await readJsonBody(req);
-      const timelineName = pixera.playback.selectedTimelineName;
+      const { action, timelineName: requestedTimeline } = await readJsonBody(req);
+      // Cue List view targets specific timelines; the header targets Pixera's
+      // currently selected one.
+      const timelineName = requestedTimeline || pixera.playback.selectedTimelineName;
       let result;
       if (action === 'fadeUp' || action === 'fadeDown') {
         result = await pixera.fadeOpacity(action === 'fadeUp', timelineName, store.settings.defaultFadeMs);
@@ -178,6 +202,99 @@ const routes = [
     handler: async (req, res) => {
       const timelines = await pixera.listAllCues();
       sendJson(res, 200, { timelines });
+    },
+  },
+  {
+    // Ordered cue list of one timeline, for the Cue List view.
+    method: 'GET',
+    pattern: /^\/api\/timelines\/cues$/,
+    handler: async (req, res, match, url) => {
+      const timeline = url.searchParams.get('timeline');
+      if (!timeline) return sendJson(res, 400, { error: 'timeline query parameter is required' });
+      sendJson(res, 200, await pixera.getTimelineCues(timeline));
+    },
+  },
+  {
+    // Fade a timeline to a cue's time and land playing (1) or paused (2).
+    method: 'POST',
+    pattern: /^\/api\/timelines\/blend$/,
+    handler: async (req, res) => {
+      const { timelineName, timeHMSF, transportMode, fadeMs } = await readJsonBody(req);
+      const resolvedFade = Number.isFinite(Number(fadeMs)) ? Number(fadeMs) : store.settings.defaultFadeMs;
+      const result = await pixera.blendToCue({
+        timelineName,
+        timeHMSF,
+        transportMode,
+        fadeMs: resolvedFade,
+      });
+      log.add({
+        server: 'system',
+        dir: 'info',
+        data: `blend "${timelineName}" to ${timeHMSF} (${transportMode === 1 ? 'play' : 'pause'}, fade ${resolvedFade}ms) -> ${result.sentTo.join(', ')}`,
+      });
+      sendJson(res, 200, { ok: true, ...result });
+    },
+  },
+  // ---- Show file management -------------------------------------------------
+  {
+    method: 'GET',
+    pattern: /^\/api\/shows$/,
+    handler: async (req, res) =>
+      sendJson(res, 200, { shows: store.listShows(), active: store.activeFile }),
+  },
+  {
+    // Create a blank show (connection settings carry over from the current one).
+    method: 'POST',
+    pattern: /^\/api\/shows$/,
+    handler: async (req, res) => {
+      const { name } = await readJsonBody(req);
+      const file = store.createShow(name);
+      sendJson(res, 201, { file, shows: store.listShows(), active: store.activeFile });
+    },
+  },
+  {
+    // Switch the active show; connections reconfigure and all clients refresh.
+    method: 'POST',
+    pattern: /^\/api\/shows\/active$/,
+    handler: async (req, res) => {
+      const { file } = await readJsonBody(req);
+      store.switchShow(file);
+      pixera.applySettings(store.settings);
+      osc.configure(store.settings.shortcuts);
+      log.add({ server: 'system', dir: 'info', data: `switched active show to "${store.activeFile}"` });
+      broadcastState();
+      sendJson(res, 200, { ok: true, active: store.activeFile });
+    },
+  },
+  {
+    // Upload a show file (saved to the library; not activated).
+    method: 'POST',
+    pattern: /^\/api\/shows\/import$/,
+    handler: async (req, res) => {
+      const { name, show } = await readJsonBody(req);
+      const file = store.importShow(name, show);
+      sendJson(res, 201, { file, shows: store.listShows(), active: store.activeFile });
+    },
+  },
+  {
+    method: 'GET',
+    pattern: /^\/api\/shows\/([^/]+)\/download$/,
+    handler: async (req, res, [, encoded]) => {
+      const { file, text } = store.readShowRaw(decodeURIComponent(encoded));
+      res.writeHead(200, {
+        'Content-Type': 'application/json; charset=utf-8',
+        'Content-Disposition': `attachment; filename="${file}"`,
+        'Cache-Control': 'no-store',
+      });
+      res.end(text);
+    },
+  },
+  {
+    method: 'DELETE',
+    pattern: /^\/api\/shows\/([^/]+)$/,
+    handler: async (req, res, [, encoded]) => {
+      store.deleteShow(decodeURIComponent(encoded));
+      sendJson(res, 200, { ok: true, shows: store.listShows(), active: store.activeFile });
     },
   },
   {
@@ -308,6 +425,7 @@ server.listen(PORT, () => {
 
 for (const sig of ['SIGINT', 'SIGTERM']) {
   process.on(sig, () => {
+    osc.close();
     pixera.shutdown();
     server.close(() => process.exit(0));
     setTimeout(() => process.exit(0), 1000).unref();

@@ -5,6 +5,9 @@ services:
     restart: unless-stopped
     ports:
       - "8000:8000"
+      # OSC remote control (optional; enable in Settings). UDP, and must match
+      # the OSC port configured in the dashboard (default 8100).
+      - "8100:8100/udp"
     volumes:
       # Show file (human-readable JSON) lives on the host so it can be
       # edited, backed up, and copied between machines.

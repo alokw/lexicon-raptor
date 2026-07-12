@@ -29,10 +29,15 @@ const initialState = {
     source: null,
   },
   log: [],
+  timelines: [], // all-timelines status (Cue List view), pushed by the server
+  activeShow: null,
   // client-only UI state
+  view: localStorage.getItem('lr.view') === 'cuelist' ? 'cuelist' : 'shortcuts',
   mode: 'run', // 'run' | 'edit'
   selectedCueId: null,
+  selectedCueIds: [], // edit-mode multi-select (ctrl/cmd-click)
   lastFiredCueId: null,
+  selectedTimeline: null, // Cue List view
   zoom: Number(localStorage.getItem('lr.zoom')) || 3, // tiles per ~row step, 1..6
   toasts: [],
 };
@@ -43,11 +48,14 @@ function reducer(state, action) {
       return { ...state, wsConnected: action.connected };
     }
     case 'state': {
-      const { settings, cues, connections, playback } = action.msg;
+      const { settings, cues, connections, playback, timelines, activeShow } = action.msg;
       const next = { ...state, settings, cues, connections, playback };
+      if (timelines) next.timelines = timelines;
+      if (activeShow !== undefined) next.activeShow = activeShow;
       if (state.selectedCueId && !cues.some((c) => c.id === state.selectedCueId)) {
         next.selectedCueId = null;
       }
+      next.selectedCueIds = state.selectedCueIds.filter((id) => cues.some((c) => c.id === id));
       return next;
     }
     case 'playback':
@@ -61,12 +69,29 @@ function reducer(state, action) {
       if (log.length > MAX_LOG_ENTRIES) log.splice(0, log.length - MAX_LOG_ENTRIES);
       return { ...state, log };
     }
+    case 'timelines':
+      return { ...state, timelines: action.msg.timelines };
+    case 'setView': {
+      localStorage.setItem('lr.view', action.view);
+      return { ...state, view: action.view };
+    }
     case 'setMode':
       return { ...state, mode: action.mode };
-    case 'selectCue':
-      return { ...state, selectedCueId: action.id };
+    case 'selectCue': {
+      if (action.multi) {
+        const ids = state.selectedCueIds.includes(action.id)
+          ? state.selectedCueIds.filter((x) => x !== action.id)
+          : [...state.selectedCueIds, action.id];
+        return { ...state, selectedCueIds: ids, selectedCueId: ids[ids.length - 1] ?? null };
+      }
+      return { ...state, selectedCueIds: [action.id], selectedCueId: action.id };
+    }
+    case 'clearCueSelection':
+      return { ...state, selectedCueIds: [], selectedCueId: null };
+    case 'selectTimeline':
+      return { ...state, selectedTimeline: action.name };
     case 'firedCue':
-      return { ...state, lastFiredCueId: action.id, selectedCueId: action.id };
+      return { ...state, lastFiredCueId: action.id, selectedCueId: action.id, selectedCueIds: [action.id] };
     case 'setZoom': {
       const zoom = Math.min(6, Math.max(1, action.zoom));
       localStorage.setItem('lr.zoom', String(zoom));
